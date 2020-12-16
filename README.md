@@ -1,2 +1,8 @@
 # ring_zc
-test of the DPDK zero-copy read to the set of the rings
+проверочка для перспективного чтения трафика сразу в закольцованные буферы dpdk. 
+
+Главный процесс dispatcher_zc вычитывает трафик и помещает его в закольцованные буферы.
+  ./dispatcher_zc --proc-type primary -c 4
+
+Клиентский вычитывает, обильно логируя происходящие события.
+./client --proc-type auto
