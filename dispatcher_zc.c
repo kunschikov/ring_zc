@@ -30,6 +30,8 @@ int priv_size            = 0;
 int data_room_size       = RTE_MBUF_DEFAULT_BUF_SIZE;
 uint16_t port            = 0;
 int ring_size            = 64*1024;
+int rte_ring_flags       = RING_F_MP_HTS_ENQ | RING_F_MC_HTS_DEQ;
+int zero_copy            = true;
 
 struct rte_ring *rings[MAX_RING_COUNT] ={NULL};
 struct rte_mempool *mbuf_pool;
@@ -103,6 +105,13 @@ void read_environment()
      if(getenv("RING_SIZE"))
           ring_size = atoi(getenv("RING_SIZE"));
      printf("\nThe 'RING_SIZE' enviroment variable sets up size of the each output ring. The size of the ring must be a power of 2: %d\n", ring_size);
+
+     if(getenv("NO_ZERO_COPY"))
+          zero_copy = false;
+     printf("\nThe 'NO_ZERO_COPY' debug enviroment variable disables zc. Zero-copy is enabled by default, current value : zero copy is %s\n", (zero_copy? "enabled" : "disabled"));
+     if(getenv("RING_FLAGS"))
+          rte_ring_flags = atoi(getenv("RING_FLAGS"));
+     printf("\nThe 'RING_FLAGS' is equal to x%x\n", rte_ring_flags);
 }
 
 
@@ -278,26 +287,60 @@ int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
      return 0;
 }
 
+uint16_t zc(struct rte_ring* r, int port, int queue)
+{
+     struct rte_ring_zc_data zcd;
+     uint16_t nb_rx = 0;
+     unsigned free_space;
+     unsigned int ret = rte_ring_enqueue_zc_burst_start(r, BURST_SIZE, &zcd, &free_space);
+     if (ret == 0) 
+          return 0;
+     nb_rx = rte_eth_rx_burst(port, queue, zcd.ptr1, zcd.n1);
+     if (nb_rx == zcd.n1 && BURST_SIZE != zcd.n1)
+          nb_rx += rte_eth_rx_burst(port, queue, zcd.ptr2, BURST_SIZE - zcd.n1);
+     /* Provide packets to the packet processing cores */
+     rte_ring_enqueue_zc_finish(r, nb_rx);
+     return nb_rx;
+}
+
+uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
+{
+     struct rte_mbuf *bufs[BURST_SIZE];
+     unsigned free_space;
+     uint16_t nb_rx = rte_eth_rx_burst(port, queue, bufs, BURST_SIZE);
+     if(!nb_rx)
+          return 0;
+     uint16_t sent_to_ring = rte_ring_mp_enqueue_burst(r, bufs, nb_rx, &free_space);
+     if (nb_rx == sent_to_ring) 
+          return nb_rx; 
+
+     static int warned = 0;
+     if(!warned){
+          RTE_LOG_DP(DEBUG, DISTRAPP,
+                    "%s:Packet loss due to full ring\n", __func__);
+          printf("loss: %d packets\n", nb_rx - sent_to_ring);
+          warned = 1;
+     }
+     int i;
+     for(i = nb_rx - 1; i != sent_to_ring; i --)
+          rte_pktmbuf_free(bufs[i]);
+
+     printf("%s:%d %s(PACKET LOSS) %d packets\n", __FILE__, __LINE__, __func__, nb_rx);
+     return nb_rx;
+}
+
 void do_packet_forwarding()
 {
      int empty = 0;
      int queue;
      for(queue = first_queue_number; queue <= last_queue_number; queue++)
      {
-          struct rte_ring_zc_data zcd;
           static int current_ring = 0; 
           if(current_ring > last_ring_number || current_ring < first_ring_number)
                current_ring = first_ring_number;
           struct rte_ring *r = rings[current_ring++];
-          unsigned free_space;
-          unsigned int ret = rte_ring_enqueue_zc_burst_start(r, BURST_SIZE, &zcd, &free_space);
-          if (ret == 0) 
-               continue;
-          uint16_t nb_rx = rte_eth_rx_burst(port, queue, zcd.ptr1, zcd.n1);
-          if (nb_rx == zcd.n1 && BURST_SIZE != zcd.n1)
-               nb_rx += rte_eth_rx_burst(port, queue, zcd.ptr2, BURST_SIZE - zcd.n1);
-          /* Provide packets to the packet processing cores */
-          rte_ring_enqueue_zc_finish(r, nb_rx);
+
+          uint16_t nb_rx = zero_copy? zc(r, port, queue) : forward_to_ring(r, port, queue);
 
           if (nb_rx == 0){
                empty++;
@@ -307,7 +350,6 @@ void do_packet_forwarding()
                }
                continue;
           }
-         printf("%s:%d %s(nb_rx #2: %d)\n", __FILE__, __LINE__, __func__, nb_rx);
           empty = 0;
      }
 }
@@ -337,7 +379,9 @@ void print_stats(void)
 
 void* create_pool(int nb_ports)
 {
-     return rte_pktmbuf_pool_create(poolname, pool_size, cache_size, priv_size, data_room_size, rte_socket_id());
+     void* pool = rte_pktmbuf_pool_create(poolname, pool_size, cache_size, priv_size, data_room_size, rte_socket_id());
+     printf("\n%s pool named '%s'\n", (pool? "Created" : "Failed to create"), poolname);
+     return pool;
 }
 
 void* lookup_pool()
@@ -350,11 +394,10 @@ void create_rings(int nb_ports)
      char ring_name[8] = {0};
      int i;
 
-
      printf("\nttotal ring count: %d\n", ring_count);
      for(i = 0; i < ring_count; i++){
           sprintf(ring_name, "RING%d", i);
-          rings[i] = rte_ring_create(ring_name, ring_size, rte_socket_id(), RING_F_MP_HTS_ENQ | RING_F_MC_HTS_DEQ);
+          rings[i] = rte_ring_create(ring_name, ring_size, rte_socket_id(), rte_ring_flags);
           if (rings[i] == NULL)
                rte_exit(EXIT_FAILURE, "Cannot create output ring #%d\n", i);
           printf("created ring #%d named '%s'\n", i, ring_name);
@@ -408,7 +451,6 @@ int main(int argc, char *argv[])
 
      read_environment();
      if (rte_eal_process_type() == RTE_PROC_PRIMARY){
-
           mbuf_pool = create_pool(nb_ports);
           if (mbuf_pool == NULL)
                rte_exit(EXIT_FAILURE, "Cannot initialize the mbuf pool\n");
