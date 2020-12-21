@@ -1,7 +1,5 @@
-#CFLAGS    ?= -I$(DPDK)/include
 DPDK      ?= /opt/dpdk-2011/
-CFLAGS     := $(CFLAGS) -I$(DPDK)/include -I$(DPDK)/include/dpdk -O3  -march=native -Wall  -ggdb
-#LD_FLAGS = -L/opt/dpdk-2011/lib64  -Wl,--whole-archive -lrte_pmd_ixgbe -lrte_pmd_e1000 -lrte_mempool_ring -Wl,--no-whole-archive
+CFLAGS     := $(CFLAGS) -I$(DPDK)/include -I$(DPDK)/include/dpdk -O3  -march=native -Wall  -DALLOW_EXPERIMENTAL_API
 LD_FLAGS = -L/opt/dpdk-2011/lib64  -Wl,--whole-archive -lrte_net_ixgbe -lrte_net_e1000 -lrte_mempool_ring -Wl,--no-whole-archive
 LD_FLAGS := ${LD_FLAGS} -lrte_mempool -lrte_ring -lrte_ethdev -lrte_mbuf -lrte_net -lrte_meter -lrte_lpm -lrte_timer -lrte_hash -lrte_cmdline
 LD_FLAGS := ${LD_FLAGS} -lrte_telemetry
@@ -15,10 +13,20 @@ LD_FLAGS := ${LD_FLAGS}  -lnuma -pthread -ldl
 dispatcher_zc:  dispatcher_zc.o
 	gcc -o $@ $^ ${LD_FLAGS} 
 
+forward:  forward.o
+	gcc -o $@ $^ ${LD_FLAGS} -L performance-thread/common/ -llthreads
+
+dispatcher:  dispatcher.o
+	gcc -o $@ $^ ${LD_FLAGS} 
+
+reader:  reader.o
+	gcc -o $@ $^ ${LD_FLAGS} 
+
 client:  client.o
 	gcc -o $@ $^ ${LD_FLAGS} 
 
+stat:  stat.o
+	gcc -o $@ $^ ${LD_FLAGS} 
 .PHONY: clean
-
 clean: 
-	rm *.o client dispatcher_zc -rf
+	rm *.o distributor  stat client dispatcher reader forward dispatcher_zc -rf
