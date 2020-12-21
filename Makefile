@@ -13,20 +13,9 @@ LD_FLAGS := ${LD_FLAGS}  -lnuma -pthread -ldl
 dispatcher_zc:  dispatcher_zc.o
 	gcc -o $@ $^ ${LD_FLAGS} 
 
-forward:  forward.o
-	gcc -o $@ $^ ${LD_FLAGS} -L performance-thread/common/ -llthreads
-
-dispatcher:  dispatcher.o
-	gcc -o $@ $^ ${LD_FLAGS} 
-
-reader:  reader.o
-	gcc -o $@ $^ ${LD_FLAGS} 
-
 client:  client.o
 	gcc -o $@ $^ ${LD_FLAGS} 
 
-stat:  stat.o
-	gcc -o $@ $^ ${LD_FLAGS} 
 .PHONY: clean
 clean: 
-	rm *.o distributor  stat client dispatcher reader forward dispatcher_zc -rf
+	rm *.o client dispatcher_zc -rf
