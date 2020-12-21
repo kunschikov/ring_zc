@@ -1,21 +1,15 @@
 #include <unistd.h>           //sleep
 #include <signal.h>           //signal
-
-#ifndef ALLOW_EXPERIMENTAL_API
-#define ALLOW_EXPERIMENTAL_API
-#endif
 #include <rte_ethdev.h>
+
 #define RX_RING_SIZE          512
 #define NUM_MBUFS             ((2*1024)-1)
 #define MBUF_CACHE_SIZE       512
 #define BURST_SIZE            32
 #define SCHED_TX_RING_SZ      65536
 
-#define RTE_LOGTYPE_DISTRAPP RTE_LOGTYPE_USER1
 
-#define ANSI_COLOR_RED     "\x1b[31m"
-#define ANSI_COLOR_RESET   "\x1b[0m"
-
+#define RTE_LOGTYPE_DISP RTE_LOGTYPE_USER1
 #define MAX_RING_COUNT       256 
 
 int ring_count           = 1;
@@ -110,7 +104,7 @@ void read_environment()
           zero_copy = false;
      printf("\nThe 'NO_ZERO_COPY' debug enviroment variable disables zc. Zero-copy is enabled by default, current value : zero copy is %s\n", (zero_copy? "enabled" : "disabled"));
      if(getenv("RING_FLAGS"))
-          rte_ring_flags = atoi(getenv("RING_FLAGS"));
+          rte_ring_flags = strtol(getenv("RING_FLAGS"), NULL, 16);
      printf("\nThe 'RING_FLAGS' is equal to x%x\n", rte_ring_flags);
 }
 
@@ -144,13 +138,13 @@ int lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *par
      ret = rte_eth_link_get_nowait(port_id, &link);
      if (ret < 0) {
           printf("Failed link get on port %d: %s\n",
-                 port_id, rte_strerror(-ret));
+                    port_id, rte_strerror(-ret));
           return ret;
      }
      if (link.link_status) {
           printf("Port %d Link Up - speed %u Mbps - %s\n\n",
                     port_id, (unsigned)link.link_speed,
-               (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
+                    (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
                     ("full-duplex") : ("half-duplex"));
      } else
           printf("Port %d Link Down\n\n", port_id);
@@ -209,19 +203,19 @@ int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
      if (port_conf.rx_adv_conf.rss_conf.rss_hf !=
                port_conf_default.rx_adv_conf.rss_conf.rss_hf) {
           printf("Port %u modified RSS hash function based on hardware support,"
-               "requested:%#"PRIx64" configured:%#"PRIx64"\n",
-               port,
-               port_conf_default.rx_adv_conf.rss_conf.rss_hf,
-               port_conf.rx_adv_conf.rss_conf.rss_hf);
+                    "requested:%#"PRIx64" configured:%#"PRIx64"\n",
+                    port,
+                    port_conf_default.rx_adv_conf.rss_conf.rss_hf,
+                    port_conf.rx_adv_conf.rss_conf.rss_hf);
      }
 
      retval = rte_eth_dev_configure(port, rss_queue_count, 0, &port_conf);
      if (retval != 0)
           return retval;
 
-         printf("%s:%d %s() number of rx decriptors before adjust: %d\n", __FILE__, __LINE__, __func__, nb_rxd);
+     printf("%s:%d %s() number of rx decriptors before adjust: %d\n", __FILE__, __LINE__, __func__, nb_rxd);
      retval = rte_eth_dev_adjust_nb_rx_tx_desc(port, &nb_rxd, NULL);
-         printf("%s:%d %s() number of rx decriptors after adjust: %d\n", __FILE__, __LINE__, __func__, nb_rxd);
+     printf("%s:%d %s() number of rx decriptors after adjust: %d\n", __FILE__, __LINE__, __func__, nb_rxd);
      if (retval != 0)
           return retval;
 
@@ -249,7 +243,7 @@ int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
           retval = rte_eth_link_get_nowait(port, &link);
           if (retval < 0) {
                printf("Failed link get (port %u): %s\n",
-                    port, rte_strerror(-retval));
+                         port, rte_strerror(-retval));
                return retval;
           } else if (link.link_status)
                break;
@@ -280,7 +274,7 @@ int port_init(uint16_t port, struct rte_mempool *mbuf_pool)
 
      retval = rte_eth_promiscuous_enable(port);
      if (retval != 0){
-         printf("%s:%d %s(failed to enable sniffing)\n", __FILE__, __LINE__, __func__);
+          printf("%s:%d %s(failed to enable sniffing)\n", __FILE__, __LINE__, __func__);
           return retval;
      }
 
@@ -316,7 +310,7 @@ uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
 
      static int warned = 0;
      if(!warned){
-          RTE_LOG_DP(DEBUG, DISTRAPP,
+          RTE_LOG_DP(DEBUG, DISP,
                     "%s:Packet loss due to full ring\n", __func__);
           printf("loss: %d packets\n", nb_rx - sent_to_ring);
           warned = 1;
@@ -332,25 +326,27 @@ uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
 void do_packet_forwarding()
 {
      int empty = 0;
-     int queue;
-     for(queue = first_queue_number; queue <= last_queue_number; queue++)
+     int queue = first_queue_number;
+     int current_ring = first_ring_number; 
+     while(!quit_signal)
      {
-          static int current_ring = 0; 
-          if(current_ring > last_ring_number || current_ring < first_ring_number)
-               current_ring = first_ring_number;
-          struct rte_ring *r = rings[current_ring++];
+          struct rte_ring *r = rings[current_ring];
 
           uint16_t nb_rx = zero_copy? zc(r, port, queue) : forward_to_ring(r, port, queue);
 
+          if(queue++ == last_queue_number)
+               queue = first_queue_number;
+          if(current_ring++ == last_ring_number)
+               current_ring = first_ring_number;
+
           if (nb_rx == 0){
                empty++;
-               if((empty > 1000*1000)){
+               if((empty > 1000*1000 * 100)){
                     print_stats();
                     empty = 0;
                }
-               continue;
-          }
-          empty = 0;
+          }else
+               empty = 0;
      }
 }
 
@@ -373,8 +369,8 @@ void print_stats(void)
           nomem     += eth_stats.rx_nombuf;
      }
 
-         printf("%s:%d %s(total %lu, lost %lu, drop %lu, nomem %lu) = processed %llu\n", __FILE__, __LINE__, __func__,
-                   total, lost, drop, nomem, processed);
+     printf("%s:%d %s(total %lu, lost %lu, drop %lu, nomem %lu) = processed %llu\n", __FILE__, __LINE__, __func__,
+               total, lost, drop, nomem, processed);
 }
 
 void* create_pool(int nb_ports)
@@ -467,9 +463,7 @@ int main(int argc, char *argv[])
                     "\n\tPerformance will not be optimal.\n", port);
 
      printf("\nCore %u doing packet RX.\n", rte_lcore_id());
-
-     while (! quit_signal) 
-          do_packet_forwarding();
+     do_packet_forwarding();
 
      print_stats();
      return EXIT_SUCCESS;
