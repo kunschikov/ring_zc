@@ -316,7 +316,7 @@ uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
           warned = 1;
      }
      int i;
-     for(i = nb_rx - 1; i != sent_to_ring; i --)
+     for(i = nb_rx - 1; i >= sent_to_ring; i --)
           rte_pktmbuf_free(bufs[i]);
 
      printf("%s:%d %s(PACKET LOSS) %d packets\n", __FILE__, __LINE__, __func__, nb_rx);
