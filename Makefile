@@ -9,6 +9,7 @@ LD_FLAGS := ${LD_FLAGS} -lrte_security
 LD_FLAGS := ${LD_FLAGS} -lrte_cryptodev
 LD_FLAGS := ${LD_FLAGS} -lrte_eal -lrte_kvargs -lrte_bus_pci -lrte_pci 
 LD_FLAGS := ${LD_FLAGS}  -lnuma -pthread -ldl
+LD_FLAGS := ${LD_FLAGS}  -lbsd
 
 dispatcher_zc:  dispatcher_zc.o
 	gcc -o $@ $^ ${LD_FLAGS} 
