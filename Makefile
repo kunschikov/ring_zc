@@ -1,6 +1,6 @@
-DPDK      ?= /opt/dpdk-2011/
+DPDK      ?= /opt/dpdk-2011
 CFLAGS     := $(CFLAGS) -I$(DPDK)/include -I$(DPDK)/include/dpdk -O3  -march=native -Wall  -DALLOW_EXPERIMENTAL_API
-LD_FLAGS = -L/opt/dpdk-2011/lib64  -Wl,--whole-archive -lrte_net_ixgbe -lrte_net_e1000 -lrte_mempool_ring -Wl,--no-whole-archive
+LD_FLAGS = -L$(DPDK)/lib64  -Wl,--whole-archive -lrte_net_ixgbe -lrte_net_e1000 -lrte_mempool_ring -Wl,--no-whole-archive
 LD_FLAGS := ${LD_FLAGS} -lrte_mempool -lrte_ring -lrte_ethdev -lrte_mbuf -lrte_net -lrte_meter -lrte_lpm -lrte_timer -lrte_hash -lrte_cmdline
 LD_FLAGS := ${LD_FLAGS} -lrte_telemetry
 LD_FLAGS := ${LD_FLAGS} -lrte_bus_vdev
