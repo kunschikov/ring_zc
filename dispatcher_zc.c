@@ -5,8 +5,7 @@
 #define RX_RING_SIZE          512
 #define NUM_MBUFS             ((2*1024)-1)
 #define MBUF_CACHE_SIZE       512
-#define BURST_SIZE            32
-#define SCHED_TX_RING_SZ      65536
+#define BURST_SIZE            512
 
 
 #define RTE_LOGTYPE_DISP RTE_LOGTYPE_USER1
@@ -22,10 +21,14 @@ int pool_size            = NUM_MBUFS;
 int cache_size           = MBUF_CACHE_SIZE;
 int priv_size            = 0;
 int data_room_size       = RTE_MBUF_DEFAULT_BUF_SIZE;
-uint16_t port            = 0;
+uint16_t ports[16]       = {0};
+uint8_t port_count       = 0;
 int ring_size            = 64*1024;
 int rte_ring_flags       = RING_F_MP_HTS_ENQ | RING_F_MC_HTS_DEQ;
 int zero_copy            = true;
+uint8_t quit_signal      = 0;
+long long processed      = 0;
+long long failed_to_send = 0;
 
 struct rte_ring *rings[MAX_RING_COUNT] ={NULL};
 struct rte_mempool *mbuf_pool;
@@ -37,7 +40,6 @@ void read_environment()
           rss_queue_count = atoi(getenv("RSS_QUEUE_COUNT"));
      printf("\nThe 'RSS_QUEUE_COUNT' environment variable sets the rss channel queue count: %d\n",  rss_queue_count);
      last_queue_number = rss_queue_count - 1;
-     last_ring_number = ring_count - 1;
 
      if(getenv("RING_COUNT"))
           ring_count = atoi(getenv("RING_COUNT"));
@@ -82,10 +84,6 @@ void read_environment()
           data_room_size = atoi(getenv("ROOM_SIZE"));
      printf("\n'ROOM_SIZE' room size: %d bytes. Size of data buffer in each mbuf, including RTE_PKTMBUF_HEADROOM == %d\n",
                data_room_size, RTE_PKTMBUF_HEADROOM);
-
-     if(getenv("PORT"))
-          port = atoi(getenv("PORT"));
-     printf("\nthe 'PORT' environment variable specifies the DPDK iface number used by this instance: %d\n", port);
 
      if(getenv("FIRST_QUEUE"))
           first_queue_number = atoi(getenv("FIRST_QUEUE"));
@@ -151,9 +149,7 @@ int lsi_event_callback(uint16_t port_id, enum rte_eth_event_type type, void *par
 
      return 0;
 }
-/* mask of enabled ports */
-volatile uint8_t quit_signal;
-long long int processed = 0;
+
 static const struct rte_eth_conf port_conf_default = {
      .rxmode = {
           .mq_mode = ETH_MQ_RX_RSS,
@@ -292,19 +288,35 @@ uint16_t zc(struct rte_ring* r, int port, int queue)
      nb_rx = rte_eth_rx_burst(port, queue, zcd.ptr1, zcd.n1);
      if (nb_rx == zcd.n1 && BURST_SIZE != zcd.n1)
           nb_rx += rte_eth_rx_burst(port, queue, zcd.ptr2, BURST_SIZE - zcd.n1);
+     processed += nb_rx;
      /* Provide packets to the packet processing cores */
      rte_ring_enqueue_zc_finish(r, nb_rx);
      return nb_rx;
 }
 
+int dont_send = -1;
+
+#ifdef DEBUG_LOG_BURST_SIZE
+int64_t counters[BURST_SIZE] = {0};
+#endif
 uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
 {
+     if(dont_send == -1)
+     {
+          dont_send = getenv("DONT_SEND");
+          printf("\n%s:%d %s(transmition is %s)\n", __FILE__, __LINE__, __func__, dont_send? "disabled" : "enabled");
+     }
+
      struct rte_mbuf *bufs[BURST_SIZE];
      unsigned free_space;
      uint16_t nb_rx = rte_eth_rx_burst(port, queue, bufs, BURST_SIZE);
+#ifdef DEBUG_LOG_BURST_SIZE
+     counters[nb_rx]++;
+#endif
      if(!nb_rx)
           return 0;
-     uint16_t sent_to_ring = rte_ring_mp_enqueue_burst(r, bufs, nb_rx, &free_space);
+     uint16_t sent_to_ring = dont_send?  0 : rte_ring_enqueue_burst(r, bufs, nb_rx, &free_space);
+     processed += sent_to_ring;
      if (nb_rx == sent_to_ring) 
           return nb_rx; 
 
@@ -313,48 +325,48 @@ uint16_t forward_to_ring(struct rte_ring* r, int port, int queue)
           RTE_LOG_DP(DEBUG, DISP,
                     "%s:Packet loss due to full ring\n", __func__);
           printf("loss: %d packets\n", nb_rx - sent_to_ring);
+          failed_to_send += nb_rx - sent_to_ring;
           warned = 1;
      }
      int i;
      for(i = nb_rx - 1; i >= sent_to_ring; i --)
           rte_pktmbuf_free(bufs[i]);
 
-     printf("%s:%d %s(PACKET LOSS) %d packets\n", __FILE__, __LINE__, __func__, nb_rx);
      return nb_rx;
 }
 
 void do_packet_forwarding()
 {
-     int empty = 0;
+     unsigned long long empty = 0;
      int queue = first_queue_number;
      int current_ring = first_ring_number; 
-     while(!quit_signal)
-     {
-          struct rte_ring *r = rings[current_ring];
+     int port = ports[0];
+     for(port = 0; !quit_signal && port < port_count; port++)
+          for(queue = first_queue_number; queue <= last_queue_number; queue++)
+          {
+               struct rte_ring *r = rings[current_ring];
 
-          uint16_t nb_rx = zero_copy? zc(r, port, queue) : forward_to_ring(r, port, queue);
+               uint16_t nb_rx = zero_copy? zc(r, ports[port], queue) : forward_to_ring(r, ports[port], queue);
 
-          if(queue++ == last_queue_number)
-               queue = first_queue_number;
-          if(current_ring++ == last_ring_number)
-               current_ring = first_ring_number;
+               if(current_ring++ == last_ring_number)
+                    current_ring = first_ring_number;
 
-          if (nb_rx == 0){
-               empty++;
-               if((empty > 1000*1000 * 100)){
-                    print_stats();
+               if (nb_rx == 0){
+                    empty++;
+                    if(empty > 1000*1000 * 100)
+                         usleep(1);
+                    if((empty % (1000*1000 * 100) == 100))
+                         print_stats();
+               }else
                     empty = 0;
-               }
-          }else
-               empty = 0;
-     }
+          }
+     printf("Exiting on signal %d\n", quit_signal);
 }
 
 
-void int_handler(int sig_num)
+void int_handler(int signal)
 {
-     printf("Exiting on signal %d\n", sig_num);
-     quit_signal = 1;
+     quit_signal = signal;
 }
 
 void print_stats(void)
@@ -369,8 +381,12 @@ void print_stats(void)
           nomem     += eth_stats.rx_nombuf;
      }
 
-     printf("%s:%d %s(total %lu, lost %lu, drop %lu, nomem %lu) = processed %llu\n", __FILE__, __LINE__, __func__,
-               total, lost, drop, nomem, processed);
+     printf("%s:%d %s(total %lu, lost %lu, drop %lu, nomem %lu) = processed %llu/failed to send: %llu\n", __FILE__, __LINE__, __func__,
+               total, lost, drop, nomem, processed, failed_to_send);
+#ifdef DEBUG_LOG_BURST_SIZE
+     for(i = 0; i < BURST_SIZE; i++)
+          printf("Got %d packets %lld times\n", i, counters[i]);
+#endif
 }
 
 void* create_pool(int nb_ports)
@@ -396,7 +412,7 @@ void create_rings(int nb_ports)
           rings[i] = rte_ring_create(ring_name, ring_size, rte_socket_id(), rte_ring_flags);
           if (rings[i] == NULL)
                rte_exit(EXIT_FAILURE, "Cannot create output ring #%d\n", i);
-          printf("created ring #%d named '%s'\n", i, ring_name);
+          printf("created ring #%d named '%s' with flags 0x%x\n", i, ring_name, rte_ring_flags);
      }
 
 }
@@ -426,6 +442,7 @@ void initialize_ports(int nb_ports)
           if (port_init(portid, mbuf_pool) != 0)
                rte_exit(EXIT_FAILURE, "Cannot initialize port %u\n",
                          portid);
+          ports[port_count++] = portid;
      }
 }
 
@@ -453,14 +470,9 @@ int main(int argc, char *argv[])
           initialize_ports(nb_ports);
           create_rings(nb_ports);
      }else{
-          //mbuf_pool = lookup_pool();
+          mbuf_pool = lookup_pool();
           lookup_rings();
      }
-     const int socket_id = rte_socket_id();
-
-     if (rte_eth_dev_socket_id(port) > 0 && rte_eth_dev_socket_id(port) != socket_id)
-          printf("\nWARNING, port %u is on remote NUMA node to RX thread."
-                    "\n\tPerformance will not be optimal.\n", port);
 
      printf("\nCore %u doing packet RX.\n", rte_lcore_id());
      do_packet_forwarding();

@@ -7,7 +7,7 @@
 #include <rte_log.h>
 #include "shared_ring_names.h"
 #define RTE_LOGTYPE_APP RTE_LOGTYPE_USER1
-static const int BURST_SIZE = 256;
+static const int BURST_SIZE = 32;
 int work = true;
 
 void int_handler(int sig_num)
@@ -50,7 +50,7 @@ int main(int argc, char **argv)
      printf("debug logging is %s. Mode can be switched by setting/unsetting the DEBUG environment variable\n", debug? "ON" : "OFF");
      int empty = 0;
      while(work){
-          uint16_t nb_rx = rte_ring_dequeue_burst(ring, (void *)bufs, BURST_SIZE - 1, NULL);
+          uint16_t nb_rx = rte_ring_dequeue_burst(ring, (void *)bufs, BURST_SIZE, NULL);
           if (nb_rx == 0){
                empty++;
                if((empty > 1000*1000*100)){
