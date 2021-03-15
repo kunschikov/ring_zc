@@ -340,9 +340,9 @@ void do_packet_forwarding()
      unsigned long long empty = 0;
      int queue = first_queue_number;
      int current_ring = first_ring_number; 
-     int port = ports[0];
-     for(port = 0; !quit_signal && port < port_count; port++)
-          for(queue = first_queue_number; queue <= last_queue_number; queue++)
+     int port;
+     while(!quit_signal) for(port = 0; !quit_signal && port < port_count; port++)
+          for(queue = first_queue_number; !quit_signal && queue <= last_queue_number; queue++)
           {
                struct rte_ring *r = rings[current_ring];
 
@@ -355,7 +355,7 @@ void do_packet_forwarding()
                     empty++;
                     if(empty > 1000*1000 * 100)
                          usleep(1);
-                    if((empty % (1000*1000 * 100) == 100))
+                    if(!(empty % (1000*1000 * 100)))
                          print_stats();
                }else
                     empty = 0;
