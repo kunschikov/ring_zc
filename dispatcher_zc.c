@@ -3,7 +3,7 @@
 #include <rte_ethdev.h>
 
 #define RX_RING_SIZE          512
-#define NUM_MBUFS             ((2*1024)-1)
+#define NUM_MBUFS             ((2*1024*1024)-1)
 #define MBUF_CACHE_SIZE       512
 #define BURST_SIZE            512
 
